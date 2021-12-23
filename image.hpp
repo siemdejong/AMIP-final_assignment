@@ -10,6 +10,8 @@
 #include <numeric>
 #include <algorithm>
 #include <initializer_list>
+#include <cmath>
+#include <optional>
 
 /** \brief Cimg.h: header-only C++ library for handling pictures
  *
@@ -83,7 +85,14 @@ typedef struct component {
  *  creating and processing multidimansional images.
  */
 namespace aip {
-
+//https://stackoverflow.com/a/34937216
+template<typename KeyType, typename ValueType> 
+std::pair<KeyType,ValueType> get_max( const std::map<KeyType,ValueType>& x ) {
+    using pairtype=std::pair<KeyType,ValueType>; 
+        return *std::max_element(x.begin(), x.end(), [] (const pairtype & p1, const pairtype & p2) {
+            return p1.second < p2.second;
+        }); 
+}
 
 /** \brief gauss samples the gauss curve
  *
@@ -1099,7 +1108,6 @@ class imageNd {
     }
 
 
-
     /** \brief GetWatershedImage
      *
 	 * Turns an image into its watershed representation
@@ -1656,9 +1664,203 @@ class imageNd {
 		return ( true );
 		
 	} // setpoints
+    
+    
+    /** \brief Merge watershed pixels with neighbouring basin.
+     *
+     * This function calculates for every watershed pixel what the mean intensity
+     * of its neighbours is. The intensity of the neighbouring pixel with the lowest difference
+     * to this mean intensity is assigned to the watershed pixel in question.
+     * 
+     * This function modifies the data array to exclude watersheds of the watershed transform.
+     */
+    auto pixelBasinMerge() {
+        auto neighbours = getNeighbours(6);
+        
+        long double intensity_sum;
+        long double mean_intensity;
+        long long n;
+        for (size_t p = 0; p < data.size() - 1; p++) { // indices -> data
+        
+            // We only want to select watershed pixels (having intensity 0);
+            if (data[p] != 0) {
+                continue;
+            }
+            
+            // Calculate mean intensity of neighbours around watershed pixel.
+            intensity_sum = 0;
+            for (size_t k = 0; k < neighbours.size(); k++) { // k: neighbour offset
+                n = p + neighbours[k]; // n: storage position of neighbour
 
-	
+                // Check if neighbour is indeed a legal neighbour.
+                if ((n > -1)
+                   && ((static_cast<size_t> (n)) < data.size())
+                   && this->valid_neighbours(n, p, 1)) {
+                    intensity_sum += data[n];
+                }
+            }
+            mean_intensity = intensity_sum / neighbours.size();
+            
+            // Look for lowest pixel with smallest deviation from mean intensity.
+            std::optional<long double> lowest_diff_from_mean_intensity;
+            long double intensity_for_lowest_intensity_diff;
+            long double curr_diff_from_mean_intensity;
+            for (size_t k = 0; k < neighbours.size(); k++) { // k: neighbour offset
+                n = p + neighbours[k]; // n: storage position of neighbour
+                
+                if ((n > -1)
+                    && ((static_cast<size_t> (n)) < data.size())
+                    && this->valid_neighbours(n, p, 1)) {
 
+                    curr_diff_from_mean_intensity = abs(mean_intensity - data[n]);
+
+                    // If lowest_diff_from_mean_intensity not yet initialized, initialize.
+                    if (not lowest_diff_from_mean_intensity) {
+                        lowest_diff_from_mean_intensity = curr_diff_from_mean_intensity;
+                        intensity_for_lowest_intensity_diff = data[n];
+                    // If lowest_diff_from_mean_intensity, check if the neighbour is the best pixel.
+                    } else if (curr_diff_from_mean_intensity < lowest_diff_from_mean_intensity) {
+                        lowest_diff_from_mean_intensity = curr_diff_from_mean_intensity;
+                        intensity_for_lowest_intensity_diff = data[n];
+                    }
+                }
+            }
+
+            if (not lowest_diff_from_mean_intensity) { // This will almost never happen, but better be safe than sorry.
+                data[p] = mean_intensity;
+            } else {
+                data[p] = intensity_for_lowest_intensity_diff;
+            }
+            
+        }
+
+        return true;
+    }
+    
+    /** \brief Select basins to concatenate in order to segment the brain.
+     *
+     * This function counts the number of pixels per basin that overlap with a presegmented brain.
+     * If this number exceeds a threshold, the mean intensity of a basin must not be too small or too large,
+     * given a lower and upper threshold on the mean basin intensity.
+     * 
+     * This function modifies the data array to a binary image, selecting basins that ought to be brain.
+     * To segment the brain, this binary image should be multiplied with the original image:
+     * inputImage *= original_image.
+     */
+    bool basinBasinMerge(imageNd<int> pre_seg, imageNd<int> original,
+                         int overlap_threshold,
+                         double lower_intensity_threshold,
+                         double upper_intensity_threshold) {
+
+        value_type max_value = *std::max_element(data.begin(), data.end());
+        size_t NP = data.size();
+        std::vector<int> Hist_ws(max_value + 2);
+        std::vector<int> Hist_ps(max_value + 2);
+        
+        std::vector<int> pre_seg_data = *pre_seg.getdata_ptr();
+        std::vector<int> original_data = *original.getdata_ptr();
+
+        // map: {label1: intensity1, label2: intensity2, etc.}
+        std::map<int, vector<double>> intensities_per_label;
+
+        // Build histograms.
+        for (unsigned n=0; n < NP; n++) {
+
+            // Count appearances for every label.
+            Hist_ws[data[n]]++;
+
+            // Count number of pixels being in the presegmentation per label.
+            if (pre_seg_data[n] > 0) {
+                Hist_ps[data[n]]++;
+            }
+
+            // For every label, we need to know intensities,
+            // to compute mean intensity for filtering.
+            intensities_per_label[data[n]].push_back(original_data[n]);
+        }
+        
+        // Compute mean intensity per label.
+        std::map<int, double> mean_intensity_per_label;
+        double mean_intensity;
+        for (auto const& [label, intensities] : intensities_per_label) { // Loop through map.
+            mean_intensity = accumulate(intensities.begin(), intensities.end(), 0) / intensities.size();
+            mean_intensity_per_label[label] = mean_intensity;
+        }
+        
+        // Specify lower and upper bound on intensity.
+        std::pair<int, double> max_mean_intensity_pair = get_max(mean_intensity_per_label);
+        double max_mean_intensity = max_mean_intensity_pair.second;
+        double upper_bound_mean_intensity = (1 - upper_intensity_threshold) * max_mean_intensity;
+        double lower_bound_mean_intensity = lower_intensity_threshold * max_mean_intensity;
+
+        // Build mask of voxels to keep.
+        std::map<int, double> overlap_per_label; // Map with percentage overlap per label.
+        double overlap_for_label; // Variable of overlap for one label.
+        for (size_t label = 0; label < Hist_ps.size(); label++) {
+
+            if (Hist_ws[label]) { // The label count should not be zero accidentally.
+            
+                // Calculate basin-presegmentation overlap in percentages.
+                overlap_for_label = 100 * Hist_ps[label] / Hist_ws[label];
+                if (overlap_for_label > overlap_threshold) { // Overlap threshold.
+                
+                    // Intensity thresholding with specified outer thresholds.
+                    if (mean_intensity_per_label[label] < upper_bound_mean_intensity &&
+                        mean_intensity_per_label[label] > lower_bound_mean_intensity) {
+                            
+                        // Select basins that meet criteria.
+                        overlap_for_label = 1;
+                    }
+                } else {
+
+                    // Reject basins that do not meet criteria.
+                    overlap_for_label = 0;
+                }
+
+            } else {
+
+                // Add 0 overlap to label if there are no counts for that label
+                overlap_for_label = 0;
+            }
+
+            overlap_per_label[label] = overlap_for_label;
+        }
+
+        // Build binary brain mask.
+        for (unsigned n = 0; n < NP; n++) {
+            if (overlap_per_label[data[n]] == 1) {
+                data[n] = 1;
+            } else {
+                data[n] = 0;
+            }
+        }
+        
+        return true;
+    }
+    
+    /* Save brain segmentation to nifti format.
+     *
+     * This function takes a filenam and three parameters to include in the filename.
+     * 
+     * This function outputs the brain segmentation in nifti format.
+     */
+    void saveBrainSegmentation(string filename,
+                               int a,
+                               double b,
+                               double c) {
+        string segmentation_filename = std::regex_replace(
+            filename,
+            std::regex(".nii"),
+            "_Brain_Segmentation_" + to_string(a) + "_" + to_string(b) + "_" + to_string(c) + ".nii");
+        this->saveNII(segmentation_filename);
+
+        // Uncomment to study ventricle.
+//        image.getSlice(0, 90, std::regex_replace(segmentation_filename, ".nii", "ventricle_bbm_slice.bmp");
+        // Uncomment to study near eyes.
+//        image.getSlice(0, 130, std::regex_replace(segmentation_filename, ".nii", "eyes_bbm_slice.bmp"));
+        std::cout << "Basin-basin merged images saved as NII."
+                  << "(a =" << a << ", b =" << b << ", c =" << c << ")" << std::endl;
+    }
 }; // class
 
 /** \brief overloaded operators +, *, - and / for basic numerical types
