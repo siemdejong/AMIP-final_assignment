@@ -22,6 +22,12 @@ typedef int num;
 
 int main() {
     // Configuration options in Config.cpp.
+    try {
+        verifyConfig();
+    } catch(ValueError) {
+        std::cout << "ValueError: Please check the configuration files.";
+        exit(0);
+    }
     
     if (Config::train_using_multiple_parameters) {
         std::cout << "Config::train_using_multiple_parameters is set to true.\n"

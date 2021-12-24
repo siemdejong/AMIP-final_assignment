@@ -21,3 +21,7 @@ class Config {
         static std::vector<std::string> test_set;
         static std::vector<std::string> ad_set;
 };
+
+// For setting verification.
+class ValueError {};
+void verifyConfig();

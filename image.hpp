@@ -1858,8 +1858,8 @@ class imageNd {
 //        image.getSlice(0, 90, std::regex_replace(segmentation_filename, ".nii", "ventricle_bbm_slice.bmp");
         // Uncomment to study near eyes.
 //        image.getSlice(0, 130, std::regex_replace(segmentation_filename, ".nii", "eyes_bbm_slice.bmp"));
-        std::cout << "Basin-basin merged images saved as NII."
-                  << "(a =" << a << ", b =" << b << ", c =" << c << ")" << std::endl;
+        std::cout << "Basin-basin merged images saved as NII. "
+                  << "(a = " << a << ", b = " << b << ", c = " << c << ")" << std::endl;
     }
 }; // class
 
