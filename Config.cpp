@@ -32,7 +32,7 @@ std::vector<std::string> Config::ad_set {
 
 void verifyConfig() {
     if (Config::sigma <= 0) {
-        std::cout << "Sigma should be in (0, inf).";
+        std::cout << "Sigma should be in (0, inf).\n";
         throw ValueError();
     }
     if (Config::preseg_overlap_threshold <= 0) {
